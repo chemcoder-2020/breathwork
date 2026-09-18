@@ -260,15 +260,29 @@ function frame(ts){
   requestAnimationFrame(frame);
 }
 
+let watchdog = null;
+function fallbackToTones(msg){
+  clearTimeout(watchdog);
+  try{ audio.pause(); }catch(e){}
+  mode = 'tone'; clock = 0; lastCue = -1; lastTs = 0;
+  $('note').textContent = msg;
+}
+function armWatchdog(){
+  clearTimeout(watchdog);
+  watchdog = setTimeout(()=>{
+    if(mode !== 'audio' || !running) return;
+    if(audio.currentTime > 0.25) return;              // playing fine
+    fallbackToTones('Audio was slow or blocked — running tone cues instead.');
+  }, 2500);
+}
+
 function start(){
   if(ended){ loadSlot(SLOTS.findIndex(s=>s.id===slot.id)); }
   if(mode === 'audio'){
     audio.currentTime = 0;
     const pr = audio.play();
-    if(pr && pr.catch) pr.catch(()=>{
-      mode = 'tone'; clock = 0; lastCue = -1;
-      $('note').textContent = 'Audio was blocked — running tone cues instead. Tap again if silent.';
-    });
+    if(pr && pr.catch) pr.catch(()=> fallbackToTones('Audio was blocked — running tone cues instead.'));
+    armWatchdog();
   }
   running = true; lastTs = 0; ended = false;
   $('start').textContent = 'Pause';
@@ -276,17 +290,18 @@ function start(){
 }
 function stop(){
   running = false;
+  clearTimeout(watchdog);
   if(mode === 'audio'){ try{ audio.pause(); audio.currentTime = 0; }catch(e){} }
   lastTs = 0;
 }
 function pause(){
-  running = false; lastTs = 0;
+  running = false; lastTs = 0; clearTimeout(watchdog);
   if(mode === 'audio') audio.pause();
   $('start').textContent = 'Resume';
   render();
 }
 function finish(){
-  ended = true; running = false;
+  ended = true; running = false; clearTimeout(watchdog);
   if(half) try{ audio.pause(); }catch(e){}
   $('start').textContent = 'Restart';
   $('logline').value = `done ${slot.time} ${slot.name.toLowerCase()}${half?' (half)':''} ${fmt(total)} · ` +
