@@ -267,33 +267,36 @@ function phasePattern(ph, durS){
   const ms = Math.max(600, Math.round(durS * 1000));
   if(ph === 'inhale2') return [70];
   if(ph === 'free')    return [90];
-  const head = ph === 'exhale' ? 150 : ph === 'inhale' ? 60 : 45;   // unmistakeable phase-change tick
-  const body = ms - head;
 
+  // A pattern MUST alternate ON, OFF, ON, ... starting with ON, and an even-length
+  // pattern loses its trailing pause (Chromium pops it). So every pattern here ends on
+  // a pulse and has an ODD length, and its durations sum to the exact phase length.
   if(ph === 'hold' || ph === 'hold2'){                     // steady, evenly spaced taps
-    const n = Math.max(2, Math.min(4, Math.round(body / 1300)));
-    const on = 45, rest = Math.max(60, Math.round((body - n * on) / n));
-    const out = [head];
-    for(let k = 0; k < n; k++) out.push(on, rest);
-    return out;                                            // 1 + 2n entries
+    let n = Math.max(2, Math.min(4, Math.round(ms / 1300)));
+    const on = 45;
+    let gap = Math.round((ms - n * on) / (n - 1));
+    if(gap < 40 && n > 2){ n--; gap = Math.round((ms - n * on) / (n - 1)); }
+    const out = [];
+    for(let k = 0; k < n; k++){ out.push(on); if(k < n - 1) out.push(Math.max(40, gap)); }
+    return out;                                            // 2n-1 entries, ends on a pulse
   }
 
   const dir = ph === 'inhale' ? 'in' : 'out';
+  const head = ph === 'exhale' ? 150 : 60;                 // unmistakeable phase-change tick
   const n = 5, w = [];
   for(let k = 0; k < n; k++){
     const t = dir === 'in' ? (k + 0.5) / n : 1 - (k + 0.5) / n;   // intensity proxy 0..1
     w.push({on: 0.30 + 0.70 * t, gap: 1.05 - 0.55 * t});         // swell: longer ons, tighter gaps
   }
-  const totalW = w.reduce((a,x)=>a+x.on,0) + w.slice(0,-1).reduce((a,x)=>a+x.gap,0);
-  const k2 = body / totalW;
-  const out = [head];
-  w.forEach((x,i)=>{
-    out.push(Math.max(10, Math.round(x.on * k2)));
-    if(i < n - 1) out.push(Math.max(10, Math.round(x.gap * k2)));
-  });
-  const pad = ms - out.reduce((a,b)=>a+b,0);                // pad/trim to the exact phase length
-  if(pad > 20) out.push(pad); else if(pad < -20) out[out.length-1] += pad;
-  return out;
+  const units = [];                                        // strict ON/OFF alternation, last gap dropped
+  w.forEach((x,i)=>{ units.push({t:'on', wt:x.on}); if(i < n - 1) units.push({t:'gap', wt:x.gap}); });
+  const totalW = units.reduce((a,u)=>a+u.wt,0);
+  const k2 = ms / totalW;
+  const out = units.map(u => Math.max(12, Math.round(u.wt * k2)));
+  out[0] = Math.max(out[0], head);                         // first pulse doubles as the change tick
+  out[out.length - 1] += ms - out.reduce((a,b)=>a+b,0);    // absorb rounding into the final pulse
+  if(out[out.length - 1] < 12) out[out.length - 1] = 12;
+  return out;                                              // 2n-1 = 9 entries, ends on a pulse
 }
 function buzzPhase(ph, durS){
   if(!haptics || !HAPTIC_OK) return;
