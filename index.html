@@ -83,6 +83,8 @@
   <button id="restart">Restart</button>
   <button id="half">Half</button>
   <button id="mute">🔊</button>
+  <button id="haptic">📳 Haptics</button>
+  <button id="testcues">Cue test</button>
 </div>
 <div class="note" id="note">Tap Start — audio needs one tap on mobile.</div>
 
@@ -95,7 +97,9 @@
 <div class="legend">
   <b>Rhythms</b> — Box <code>4-4-4-4</code> · Sighs <code>3+1 in / 6 out</code> · Resonance <code>5.5 / 5.5</code> ·
   Coherent <code>4 in / 6 out</code> · Extended exhale <code>4 in / 8 out</code> · 4-7-8 <code>4 in / 7 hold / 8 out</code>.<br>
-  Voice guidance on the first two cycles of each block, tones after. Deep links: add <code>#1100</code>, <code>#0800</code>, … to open a specific session.
+  Voice guidance on the first two cycles of each block, tones after. Deep links: add <code>#1100</code>, <code>#0800</code>, … to open a specific session.<br>
+  <b>Haptics</b> (Android/Chrome — Telegram's in-app browser included): inhale <code>1 short pulse</code> · hold <code>2 quick taps</code> ·
+  exhale <code>1 long buzz</code> · finished <code>3 pulses</code>. iPhone/Safari cannot vibrate a web page: use headphones, the audio cues carry you eyes-closed.
 </div>
 
 <script>
@@ -242,6 +246,41 @@ function cueFor(i){
   tone(ph==='inhale'?587.33:ph==='inhale2'?880:ph==='hold'?440:349.23, ph==='exhale'?0.28:0.16, 0.2);
 }
 
+/* ---- haptics: eyes-closed guidance ---- */
+const HAPTIC_OK = typeof navigator.vibrate === 'function';
+let haptics = HAPTIC_OK && localStorage.getItem('bw_buzz') !== '0';
+const buzzLog = [];
+const BUZZ = {
+  inhale : [130],                 // one short pulse  -> rising
+  inhale2: [70],                  // tiny tap          -> top-up sip
+  hold   : [55,70,55],            // two quick taps    -> stay
+  hold2  : [55,70,55],
+  exhale : [430],                 // one long buzz     -> release, sink
+  free   : [90],                  // gentle pulse each ~11s breath in the tail
+  ready  : [45],                  // countdown taps before the first inhale
+  done   : [150,120,150,120,320], // finished
+};
+let lastReadyMark = 0, lastFreeBuzz = -99;
+function buzz(kind){
+  if(!haptics || !HAPTIC_OK) return;
+  const pat = BUZZ[kind];
+  if(!pat) return;
+  buzzLog.push(kind);
+  try{ navigator.vibrate(pat); }catch(e){}
+}
+function buzzStop(){ if(HAPTIC_OK){ try{ navigator.vibrate(0); }catch(e){} } }
+
+/* keep the screen (and rAF timers) alive so cues keep firing with the phone down */
+let wakeLock = null;
+async function keepAwake(){
+  try{
+    if('wakeLock' in navigator && document.visibilityState === 'visible'){
+      wakeLock = await navigator.wakeLock.request('screen');
+    }
+  }catch(e){}
+}
+document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState === 'visible' && running) keepAwake(); });
+
 /* ---- loop ---- */
 function frame(ts){
   if(!running) return;
@@ -254,8 +293,16 @@ function frame(ts){
     if(clock >= total){ clock = total; finish(); return; }
   }
   if(clock >= total){ clock = total; finish(); return; }
+  if(clock < 0){                                  // countdown taps during the lead-in
+    const mark = Math.ceil(-clock);
+    if(mark !== lastReadyMark){
+      lastReadyMark = mark;
+      if(mark === 1 || mark === 2) buzz('ready');
+    }
+  }
   const i = Math.max(0, Math.min(seq.length-1, idxAt(Math.max(0, clock))));
-  if(i !== phaseIdx){ phaseIdx = i; cueFor(i); }
+  if(i !== phaseIdx){ phaseIdx = i; cueFor(i); buzz(seq[i].ph); lastFreeBuzz = clock; }
+  if(seq[phaseIdx].ph === 'free' && clock - lastFreeBuzz >= 11){ lastFreeBuzz = clock; buzz('free'); }
   render();
   requestAnimationFrame(frame);
 }
@@ -285,23 +332,28 @@ function start(){
     armWatchdog();
   }
   running = true; lastTs = 0; ended = false;
+  lastReadyMark = 0; lastFreeBuzz = -99;
+  keepAwake();
   $('start').textContent = 'Pause';
   requestAnimationFrame(frame);
 }
 function stop(){
   running = false;
   clearTimeout(watchdog);
+  buzzStop();
   if(mode === 'audio'){ try{ audio.pause(); audio.currentTime = 0; }catch(e){} }
   lastTs = 0;
 }
 function pause(){
   running = false; lastTs = 0; clearTimeout(watchdog);
+  buzzStop();
   if(mode === 'audio') audio.pause();
   $('start').textContent = 'Resume';
   render();
 }
 function finish(){
   ended = true; running = false; clearTimeout(watchdog);
+  buzz('done');
   if(half) try{ audio.pause(); }catch(e){}
   $('start').textContent = 'Restart';
   $('logline').value = `done ${slot.time} ${slot.name.toLowerCase()}${half?' (half)':''} ${fmt(total)} · ` +
@@ -315,6 +367,32 @@ $('start').onclick = ()=>{ running ? pause() : start(); };
 $('restart').onclick = ()=> loadSlot(SLOTS.findIndex(s=>s.id===slot.id));
 $('half').onclick = e=>{ if(running) return; half = !half; e.target.classList.toggle('off', half); loadSlot(SLOTS.findIndex(s=>s.id===slot.id)); };
 $('mute').onclick = e=>{ muted = !muted; audio.muted = muted; e.target.textContent = muted ? '🔇' : '🔊'; e.target.classList.toggle('off', muted); };
+function syncHaptic(){
+  const b = $('haptic');
+  b.classList.toggle('off', !haptics);
+  b.textContent = HAPTIC_OK ? (haptics ? '📳 Haptics' : '📳 Off') : '📳 No vibrate';
+}
+$('haptic').onclick = ()=>{
+  if(!HAPTIC_OK){
+    $('note').textContent = 'This browser cannot vibrate a web page (iOS Safari/WKWebView has no Vibration API). Use headphones — the audio already guides you with your eyes closed.';
+    return;
+  }
+  haptics = !haptics;
+  localStorage.setItem('bw_buzz', haptics ? '1' : '0');
+  syncHaptic();
+  if(haptics) buzz('inhale');
+  $('note').textContent = haptics ? 'Haptics on — inhale: 1 short pulse · hold: 2 quick taps · exhale: 1 long buzz · done: 3 pulses.'
+                                  : 'Haptics off.';
+};
+$('testcues').onclick = ()=>{
+  if(!HAPTIC_OK){
+    $('note').textContent = 'No vibration support in this browser — nothing to test. The audio cues work with headphones.';
+    return;
+  }
+  ['ready','inhale','inhale2','hold','exhale','done'].forEach((k,i)=> setTimeout(()=>buzz(k), i*1100));
+  $('note').textContent = 'Cue test: ready = 1 tap · inhale = 1 short pulse · top-up = tiny tap · hold = 2 quick taps · exhale = 1 long buzz · done = 3 pulses.';
+};
+syncHaptic();
 $('logline').onclick = e=>{ e.target.select(); document.execCommand && document.execCommand('copy'); };
 document.addEventListener('keydown', e=>{
   if(e.code === 'Space'){ e.preventDefault(); running ? pause() : start(); }
@@ -336,6 +414,7 @@ window.addEventListener('hashchange', ()=>{
 /* debug hook: lets tooling assert which clock is driving the session */
 window.__bw = () => ({
   mode, running, ended, half,
+  haptics, hapticOk: HAPTIC_OK, buzzLog: buzzLog.slice(-12),
   clock: +clock.toFixed(2),
   audioTime: +(audio.currentTime || 0).toFixed(2),
   readyState: audio.readyState,
