@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#0b0f14">
+<title>Chirp tuner</title>
+<style>
+  :root{--bg:#0b0f14;--panel:#131a22;--line:#22303d;--txt:#e7eef5;--dim:#7d8fa1;
+        --accent:#4cc9f0;--accent2:#7ae582}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;min-height:100%}
+  body{background:radial-gradient(1200px 700px at 50% -10%,#16222e 0%,var(--bg) 60%);
+       color:var(--txt);font:15px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+       display:flex;flex-direction:column;align-items:center;padding:16px 13px 40px;gap:12px}
+  header{width:100%;max-width:720px}
+  h1{font-size:16px;font-weight:600;margin:0}
+  p.sub{color:var(--dim);font-size:12.5px;margin:4px 0 0}
+  .card{width:100%;max-width:720px;background:var(--panel);border:1px solid var(--line);
+        border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:12px}
+  .row{display:flex;flex-direction:column;gap:4px}
+  .row label{display:flex;justify-content:space-between;font-size:13px}
+  .row label b{color:var(--accent);font-variant-numeric:tabular-nums}
+  input[type=range]{width:100%;accent-color:var(--accent)}
+  .btns{display:flex;flex-wrap:wrap;gap:8px}
+  button{font:inherit;font-size:13.5px;color:var(--txt);background:#0d141b;border:1px solid var(--line);
+         border-radius:10px;padding:10px 14px;cursor:pointer}
+  button:hover{border-color:#33505f}
+  button.primary{background:var(--accent);color:#04212b;border-color:var(--accent);font-weight:600}
+  button.stop{background:#3a1414;border-color:#7a2a2a}
+  button.on{border-color:var(--accent2)}
+  .out{font:12px ui-monospace,SFMono-Regular,monospace;color:#b7c8d6;word-break:break-all;
+       background:#0d141b;border:1px solid var(--line);border-radius:8px;padding:9px;min-height:34px}
+  .warn{color:var(--warn,#ffb703);font-size:12.5px;min-height:16px}
+  .note{width:100%;max-width:720px;font-size:12px;color:var(--dim)}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<header>
+  <h1>📳 Chirp tuner</h1>
+  <p class="sub">Feel different chirp speeds, then send back the numbers that work.
+  <a href="./">← pacer</a></p>
+</header>
+
+<div class="card">
+  <div class="row">
+    <label>Phase length <b id="v-dur">4.0 s</b></label>
+    <input type="range" id="s-dur" min="2" max="8" step="0.5" value="4">
+  </div>
+  <div class="row">
+    <label>Pulses per phase <b id="v-n">5</b></label>
+    <input type="range" id="s-n" min="3" max="9" step="1" value="5">
+  </div>
+  <div class="row">
+    <label>Tap length <b id="v-tap">60 ms</b></label>
+    <input type="range" id="s-tap" min="20" max="150" step="5" value="60">
+  </div>
+  <div class="row">
+    <label>Slowest gap (phase start on inhale) <b id="v-gmax">420 ms</b></label>
+    <input type="range" id="s-gmax" min="100" max="1500" step="10" value="420">
+  </div>
+  <div class="row">
+    <label>Fastest gap (phase end on inhale) <b id="v-gmin">90 ms</b></label>
+    <input type="range" id="s-gmin" min="30" max="400" step="5" value="90">
+  </div>
+  <div class="btns">
+    <button id="b-in" class="primary">▶ Inhale (slow → fast)</button>
+    <button id="b-out" class="primary">▶ Exhale (fast → slow)</button>
+    <button id="b-hold">▶ Hold (steady)</button>
+    <button id="b-loop">🔁 Loop breathe-along</button>
+    <button id="b-stop" class="stop">■ Stop</button>
+  </div>
+  <div class="out" id="pat">pattern appears here</div>
+  <div class="warn" id="warn"></div>
+  <div class="btns">
+    <button id="b-copy">📋 Copy my settings</button>
+  </div>
+  <div class="out" id="settings">—</div>
+</div>
+
+<p class="note" id="support"></p>
+<p class="note">How fast can it go? The web API only switches the motor on/off, so the "rate" is
+1&nbsp;/&nbsp;(tap&nbsp;+&nbsp;gap). Taps stay readable down to ~40&nbsp;ms; gaps below ~30&nbsp;ms
+merge into one continuous buzz. That caps clean discrete pulses at roughly 8–10&nbsp;per&nbsp;second —
+faster than that and it stops feeling like pulses at all. The native app runs 2–3&nbsp;Hz for comparison.</p>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const VIB = typeof navigator.vibrate === 'function';
+$('support').textContent = VIB
+  ? 'Vibration supported in this browser — what you feel here is exactly what the pacer will play.'
+  : '⚠️ This browser cannot vibrate (e.g. iOS Safari) — the numbers still preview, but you will feel nothing here. Open this page in Chrome on Android to feel it.';
+
+const P = {dur:4, n:5, tap:60, gmax:420, gmin:90};
+let loopTimer = null, looping = false;
+
+function sync(){
+  $('v-dur').textContent = P.dur.toFixed(1)+' s';
+  $('v-n').textContent = P.n;
+  $('v-tap').textContent = P.tap+' ms';
+  $('v-gmax').textContent = P.gmax+' ms';
+  $('v-gmin').textContent = P.gmin+' ms';
+  $('settings').textContent =
+    `dur=${P.dur}s n=${P.n} tap=${P.tap}ms slow=${P.gmax}ms fast=${P.gmin}ms`;
+}
+for(const [id,key,fmt] of [['s-dur','dur'],['s-n','n'],['s-tap','tap'],['s-gmax','gmax'],['s-gmin','gmin']]){
+  $(id).addEventListener('input', e=>{ P[key] = parseFloat(e.target.value); sync(); });
+}
+
+/* Same maths as the pacer (scaled gaps, even taps) so what you feel is what ships. */
+function buildChirp(durS, n, tapMs, gapSlow, gapFast, dir){
+  const ms = Math.round(durS*1000);
+  const gaps = [];
+  for(let k=0;k<n-1;k++){
+    const t = (n-1)===1 ? 1 : k/(n-2);
+    const g = dir==='in' ? gapSlow+(gapFast-gapSlow)*t : gapFast+(gapSlow-gapFast)*t;
+    gaps.push(g);
+  }
+  const sumG = gaps.reduce((a,b)=>a+b,0);
+  const k2 = (ms - n*tapMs)/sumG;
+  const gapsOut = gaps.map(g=>Math.round(g*k2));
+  const tapOut = tapMs;
+  const out=[tapOut];
+  for(let k=0;k<n-1;k++){ out.push(gapsOut[k]); out.push(tapOut); }
+  out[out.length-1] += ms - out.reduce((a,b)=>a+b,0);
+  return out;
+}
+
+function describe(pat, dir){
+  const gaps = pat.filter((_,i)=>i%2===1);
+  const taps = pat.filter((_,i)=>i%2===0);
+  const rate0 = 1000/(taps[0]+gaps[0]), rate1 = 1000/(taps[taps.length-1]+gaps[gaps.length-1]);
+  const lo=Math.min(rate0,rate1).toFixed(1), hi=Math.max(rate0,rate1).toFixed(1);
+  return `${dir}: ${pat.length} segs, ${(pat.reduce((a,b)=>a+b,0)/1000).toFixed(1)}s, ` +
+         `rate ${dir==='in'?lo+' → '+hi:hi+' → '+lo} pulses/s` +
+         (Math.min(...gaps)<30 ? ' ⚠️ gaps <30ms will merge into a buzz' : '');
+}
+
+function play(dir){
+  stopLoop();
+  const durMs = Math.round(P.dur*1000);
+  let pat;
+  if(dir==='hold'){
+    const gap = Math.max(30, Math.round((durMs - P.n*P.tap)/(P.n-1)));
+    pat=[P.tap];
+    for(let k=0;k<P.n-1;k++){ pat.push(gap); pat.push(P.tap); }
+    pat[pat.length-1] += durMs - pat.reduce((a,b)=>a+b,0);
+    $('pat').textContent = `hold: [${pat.join(', ')}] · steady ${(1000/(P.tap+gap)).toFixed(1)} pulses/s`;
+  } else {
+    pat = buildChirp(P.dur, P.n, P.tap, P.gmax, P.gmin, dir);
+    $('pat').textContent = `[${pat.join(', ')}]\n` + describe(pat, dir);
+  }
+  const small = pat.filter((_,i)=>i%2===1).some(g=>g<30) || pat.some((x,i)=>i%2===0 && x<12);
+  $('warn').textContent = small ? '⚠️ some segments are below what most motors render cleanly — expect smearing.' : '';
+  try{ navigator.vibrate(pat); }catch(e){}
+}
+
+function stopLoop(){ looping=false; clearTimeout(loopTimer); $('b-loop').classList.remove('on'); try{ navigator.vibrate(0); }catch(e){} }
+function loop(){
+  if(looping){ stopLoop(); return; }
+  looping=true; $('b-loop').classList.add('on');
+  const step=()=>{
+    if(!looping) return;
+    play('in');
+    loopTimer=setTimeout(()=>{
+      if(!looping) return;
+      play('out');
+      loopTimer=setTimeout(step, Math.round(P.dur*1000)+400);
+    }, Math.round(P.dur*1000)+400);
+  };
+  step();
+}
+
+$('b-in').onclick=()=>play('in');
+$('b-out').onclick=()=>play('out');
+$('b-hold').onclick=()=>play('hold');
+$('b-loop').onclick=loop;
+$('b-stop').onclick=stopLoop;
+$('b-copy').onclick=e=>{
+  const t=$('settings').textContent;
+  try{ navigator.clipboard.writeText(t); e.target.textContent='✓ Copied — paste it back to me'; }
+  catch(err){ e.target.textContent='Copy failed — long-press the settings box'; }
+  setTimeout(()=>{ e.target.textContent='📋 Copy my settings'; }, 2500);
+};
+sync();
+</script>
+</body>
+</html>
