@@ -260,7 +260,7 @@ const BUZZ = {
   ready  : [45],                  // countdown taps before the first inhale
   done   : [150,120,150,120,320], // finished
 };
-let lastReadyMark = 0, lastFreeBuzz = -99;
+let lastReadyMark = 0, lastFreeBuzz = -99, firstCue = false;
 function buzz(kind){
   if(!haptics || !HAPTIC_OK) return;
   const pat = BUZZ[kind];
@@ -301,7 +301,10 @@ function frame(ts){
     }
   }
   const i = Math.max(0, Math.min(seq.length-1, idxAt(Math.max(0, clock))));
-  if(i !== phaseIdx){ phaseIdx = i; cueFor(i); buzz(seq[i].ph); lastFreeBuzz = clock; }
+  if(i !== phaseIdx){ phaseIdx = i; firstCue = true; cueFor(i); buzz(seq[i].ph); lastFreeBuzz = clock; }
+  if(!firstCue && clock >= 0){            // phase 0 has no transition to detect — fire it on the clock
+    firstCue = true; cueFor(phaseIdx); buzz(seq[phaseIdx].ph);
+  }
   if(seq[phaseIdx].ph === 'free' && clock - lastFreeBuzz >= 11){ lastFreeBuzz = clock; buzz('free'); }
   render();
   requestAnimationFrame(frame);
@@ -332,7 +335,7 @@ function start(){
     armWatchdog();
   }
   running = true; lastTs = 0; ended = false;
-  lastReadyMark = 0; lastFreeBuzz = -99;
+  lastReadyMark = 0; lastFreeBuzz = -99; firstCue = false;
   keepAwake();
   $('start').textContent = 'Pause';
   requestAnimationFrame(frame);
