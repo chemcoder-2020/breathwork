@@ -98,8 +98,10 @@
   <b>Rhythms</b> — Box <code>4-4-4-4</code> · Sighs <code>3+1 in / 6 out</code> · Resonance <code>5.5 / 5.5</code> ·
   Coherent <code>4 in / 6 out</code> · Extended exhale <code>4 in / 8 out</code> · 4-7-8 <code>4 in / 7 hold / 8 out</code>.<br>
   Voice guidance on the first two cycles of each block, tones after. Deep links: add <code>#1100</code>, <code>#0800</code>, … to open a specific session.<br>
-  <b>Haptics</b> (Android/Chrome — Telegram's in-app browser included): inhale <code>1 short pulse</code> · hold <code>2 quick taps</code> ·
-  exhale <code>1 long buzz</code> · finished <code>3 pulses</code>. iPhone/Safari cannot vibrate a web page: use headphones, the audio cues carry you eyes-closed.
+  <b>Haptics</b> (Android/Chrome — Telegram's in-app browser included): the buzz <code>swells</code> through each inhale (pulses lengthen, gaps close),
+  stays steady through holds, and <code>fades</code> through each exhale (pulses shorten, gaps open); three pulses means finished.
+  The web can only switch a vibrator on and off — true amplitude ramping is native-only — so the shape comes from pulse spacing.
+  iPhone/Safari cannot vibrate a web page at all: use headphones, the audio cues carry you eyes-closed.
 </div>
 
 <script>
@@ -251,15 +253,54 @@ const HAPTIC_OK = typeof navigator.vibrate === 'function';
 let haptics = HAPTIC_OK && localStorage.getItem('bw_buzz') !== '0';
 const buzzLog = [];
 const BUZZ = {
-  inhale : [130],                 // one short pulse  -> rising
-  inhale2: [70],                  // tiny tap          -> top-up sip
-  hold   : [55,70,55],            // two quick taps    -> stay
-  hold2  : [55,70,55],
-  exhale : [430],                 // one long buzz     -> release, sink
   free   : [90],                  // gentle pulse each ~11s breath in the tail
   ready  : [45],                  // countdown taps before the first inhale
   done   : [150,120,150,120,320], // finished
 };
+/* The web Vibration API is on/off only - no amplitude. Pixel Watch gets its ramp from
+   Android's VibrationEffect amplitude array (0-255), which a web page cannot reach.
+   So the "path" is rebuilt from duty cycle: through an inhale the pulses lengthen and
+   the gaps close (feels like a swell); through an exhale they shorten and open up
+   (feels like a fade). Each pattern is scaled to the exact phase length, so the next
+   phase's pattern takes over precisely on the beat. Kept to <=10 entries, the spec cap. */
+function phasePattern(ph, durS){
+  const ms = Math.max(600, Math.round(durS * 1000));
+  if(ph === 'inhale2') return [70];
+  if(ph === 'free')    return [90];
+  const head = ph === 'exhale' ? 150 : ph === 'inhale' ? 60 : 45;   // unmistakeable phase-change tick
+  const body = ms - head;
+
+  if(ph === 'hold' || ph === 'hold2'){                     // steady, evenly spaced taps
+    const n = Math.max(2, Math.min(4, Math.round(body / 1300)));
+    const on = 45, rest = Math.max(60, Math.round((body - n * on) / n));
+    const out = [head];
+    for(let k = 0; k < n; k++) out.push(on, rest);
+    return out;                                            // 1 + 2n entries
+  }
+
+  const dir = ph === 'inhale' ? 'in' : 'out';
+  const n = 5, w = [];
+  for(let k = 0; k < n; k++){
+    const t = dir === 'in' ? (k + 0.5) / n : 1 - (k + 0.5) / n;   // intensity proxy 0..1
+    w.push({on: 0.30 + 0.70 * t, gap: 1.05 - 0.55 * t});         // swell: longer ons, tighter gaps
+  }
+  const totalW = w.reduce((a,x)=>a+x.on,0) + w.slice(0,-1).reduce((a,x)=>a+x.gap,0);
+  const k2 = body / totalW;
+  const out = [head];
+  w.forEach((x,i)=>{
+    out.push(Math.max(10, Math.round(x.on * k2)));
+    if(i < n - 1) out.push(Math.max(10, Math.round(x.gap * k2)));
+  });
+  const pad = ms - out.reduce((a,b)=>a+b,0);                // pad/trim to the exact phase length
+  if(pad > 20) out.push(pad); else if(pad < -20) out[out.length-1] += pad;
+  return out;
+}
+function buzzPhase(ph, durS){
+  if(!haptics || !HAPTIC_OK) return;
+  const pat = phasePattern(ph, durS);
+  buzzLog.push(ph + ':' + pat.join('-'));
+  try{ navigator.vibrate(pat); }catch(e){}
+}
 let lastReadyMark = 0, lastFreeBuzz = -99, firstCue = false;
 function buzz(kind){
   if(!haptics || !HAPTIC_OK) return;
@@ -301,9 +342,12 @@ function frame(ts){
     }
   }
   const i = Math.max(0, Math.min(seq.length-1, idxAt(Math.max(0, clock))));
-  if(i !== phaseIdx){ phaseIdx = i; firstCue = true; cueFor(i); buzz(seq[i].ph); lastFreeBuzz = clock; }
+  if(i !== phaseIdx){
+    phaseIdx = i; firstCue = true; cueFor(i);
+    buzzPhase(seq[i].ph, seq[i].s); lastFreeBuzz = clock;
+  }
   if(!firstCue && clock >= 0){            // phase 0 has no transition to detect — fire it on the clock
-    firstCue = true; cueFor(phaseIdx); buzz(seq[phaseIdx].ph);
+    firstCue = true; cueFor(phaseIdx); buzzPhase(seq[phaseIdx].ph, seq[phaseIdx].s);
   }
   if(seq[phaseIdx].ph === 'free' && clock - lastFreeBuzz >= 11){ lastFreeBuzz = clock; buzz('free'); }
   render();
@@ -384,7 +428,7 @@ $('haptic').onclick = ()=>{
   localStorage.setItem('bw_buzz', haptics ? '1' : '0');
   syncHaptic();
   if(haptics) buzz('inhale');
-  $('note').textContent = haptics ? 'Haptics on — inhale: 1 short pulse · hold: 2 quick taps · exhale: 1 long buzz · done: 3 pulses.'
+  $('note').textContent = haptics ? 'Haptics on — the buzz swells through the inhale, holds steady, then fades through the exhale.'
                                   : 'Haptics off.';
 };
 $('testcues').onclick = ()=>{
@@ -392,8 +436,13 @@ $('testcues').onclick = ()=>{
     $('note').textContent = 'No vibration support in this browser — nothing to test. The audio cues work with headphones.';
     return;
   }
-  ['ready','inhale','inhale2','hold','exhale','done'].forEach((k,i)=> setTimeout(()=>buzz(k), i*1100));
-  $('note').textContent = 'Cue test: ready = 1 tap · inhale = 1 short pulse · top-up = tiny tap · hold = 2 quick taps · exhale = 1 long buzz · done = 3 pulses.';
+  const fire = (kind, durS, delay) => setTimeout(()=> (kind === 'ready' || kind === 'done') ? buzz(kind) : buzzPhase(kind, durS), delay);
+  fire('ready',  0, 0);      // one tap: get ready
+  fire('inhale', 3, 1000);   // 3s swell
+  fire('hold',   2, 4300);   // 2s steady taps
+  fire('exhale', 4, 6600);   // 4s fade
+  fire('done',   0, 10900);  // three pulses
+  $('note').textContent = 'Cue test: tap = get ready · inhale swells (pulses lengthen and quicken) · hold is steady taps · exhale fades (pulses shorten and open up) · three pulses = done.';
 };
 syncHaptic();
 $('logline').onclick = e=>{ e.target.select(); document.execCommand && document.execCommand('copy'); };
